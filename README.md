@@ -18,7 +18,7 @@ Six playbooks, one router, and one standard-library Python CLI. No server, no de
 ## Install
 
 ```bash
-npx skills add https://github.com/bajpainaman/cdpi --skill cdpi
+npx skills add bajpainaman/cdpi
 ```
 
 That uses the [skills CLI](https://github.com/vercel-labs/skills), which supports Claude Code, Codex, Amp, Cursor and 70+ other agents.
