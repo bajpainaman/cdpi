@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "skills/cdpi"
 sys.path.insert(0, str(ROOT / "lib"))
 import cdpi
 

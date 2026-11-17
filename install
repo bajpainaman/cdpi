@@ -1,14 +1,99 @@
 #!/usr/bin/env bash
-# Install the cdpi skill for Claude Code (~/.claude/skills/cdpi) and Codex/Amp (~/.agents/skills/cdpi).
-# Override targets with CDPI_SKILL_DESTS="dir1 dir2". Then fetch the pinned sources once.
+# Install the skills in this repository's skills/ folder into every coding agent found on this machine.
+#
+#   Remote:  bash <(curl -fsSL https://raw.githubusercontent.com/bajpainaman/cdpi/main/install)
+#   Local:   ./install [--project] [--skill NAME]... [--list] [--dry-run] [--uninstall]
+#
+# It looks for each agent's config folder (~/.claude, ~/.agents or ~/.codex, ~/.config/amp,
+# ~/.cursor, ~/.gemini, and others) and copies each skill into that agent's skills folder.
+# --project installs into ./.agents/skills and ./.claude/skills instead.
+# With Node, `npx skills add <repo>` does the same job; see the README.
 set -euo pipefail
-SRC=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-for dest in ${CDPI_SKILL_DESTS:-"$HOME/.claude/skills/cdpi $HOME/.agents/skills/cdpi"}; do
-  mkdir -p "$dest"
-  for part in SKILL.md LICENSE sources.json bin lib data reference agents; do
-    rm -rf "${dest:?}/$part"; cp -R "$SRC/$part" "$dest/$part"
-  done
-  find "$dest" -name __pycache__ -prune -exec rm -rf {} +
-  echo "installed $dest"
+
+DEFAULT_REPO="https://github.com/bajpainaman/cdpi.git"
+REPO="${SKILLS_REPO:-$DEFAULT_REPO}"
+
+PROJECT=0 LIST=0 DRY=0 UNINSTALL=0
+WANT=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project) PROJECT=1 ;;
+    --skill) WANT+=("${2:?--skill needs a name}"); shift ;;
+    --list) LIST=1 ;;
+    --dry-run) DRY=1 ;;
+    --uninstall) UNINSTALL=1 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "install: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift
 done
-"$SRC/bin/cdpi" sync
+
+# Source: this checkout, or a temporary shallow clone when run through curl.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)
+if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/skills" ]; then
+  SRC="$SCRIPT_DIR"
+else
+  command -v git >/dev/null || { echo "install: git is required" >&2; exit 1; }
+  SRC=$(mktemp -d "${TMPDIR:-/tmp}/skills-install.XXXXXX")
+  trap 'rm -rf "$SRC"' EXIT
+  git clone -q --depth 1 "$REPO" "$SRC"
+fi
+
+SKILLS=()
+for md in "$SRC"/skills/*/SKILL.md; do
+  [ -f "$md" ] || continue
+  name=$(basename "$(dirname "$md")")
+  if [ ${#WANT[@]} -eq 0 ] || printf '%s\n' "${WANT[@]}" | grep -qx "$name"; then SKILLS+=("$name"); fi
+done
+[ ${#SKILLS[@]} -gt 0 ] || { echo "install: no matching skills under $SRC/skills" >&2; exit 1; }
+
+# Agent config folder -> its global skills folder (paths from the skills CLI's agent table).
+AGENTS="claude:$HOME/.claude:$HOME/.claude/skills
+codex:$HOME/.codex:$HOME/.agents/skills
+agents:$HOME/.agents:$HOME/.agents/skills
+amp:$HOME/.config/amp:$HOME/.config/agents/skills
+cursor:$HOME/.cursor:$HOME/.cursor/skills
+gemini:$HOME/.gemini:$HOME/.gemini/skills
+copilot:$HOME/.copilot:$HOME/.copilot/skills
+opencode:$HOME/.config/opencode:$HOME/.config/opencode/skills
+droid:$HOME/.factory:$HOME/.factory/skills
+windsurf:$HOME/.codeium/windsurf:$HOME/.codeium/windsurf/skills
+kiro:$HOME/.kiro:$HOME/.kiro/skills
+goose:$HOME/.config/goose:$HOME/.config/goose/skills
+roo:$HOME/.roo:$HOME/.roo/skills
+continue:$HOME/.continue:$HOME/.continue/skills
+hermes:$HOME/.hermes:$HOME/.hermes/skills"
+
+TARGETS=()
+add_target() { printf '%s\n' "${TARGETS[@]:-}" | grep -qxF "$1" || TARGETS+=("$1"); }
+if [ "$PROJECT" = 1 ]; then
+  add_target "$PWD/.agents/skills"; add_target "$PWD/.claude/skills"
+else
+  while IFS=: read -r agent marker dir; do
+    [ -d "$marker" ] && add_target "$dir"
+  done <<< "$AGENTS"
+  if [ ${#TARGETS[@]} -eq 0 ]; then add_target "$HOME/.agents/skills"; add_target "$HOME/.claude/skills"; fi
+fi
+
+if [ "$LIST" = 1 ]; then
+  echo "skills:  ${SKILLS[*]}"; printf 'target:  %s\n' "${TARGETS[@]}"; exit 0
+fi
+
+for dir in "${TARGETS[@]}"; do
+  for name in "${SKILLS[@]}"; do
+    dest="$dir/$name"
+    if [ "$DRY" = 1 ]; then echo "would $([ "$UNINSTALL" = 1 ] && echo remove || echo install) $dest"; continue; fi
+    # A symlinked dev install is replaced as a link only; its target is never touched.
+    if [ -L "$dest" ]; then rm -f "$dest"; elif [ -e "$dest" ]; then rm -rf "$dest"; fi
+    [ "$UNINSTALL" = 1 ] && { echo "removed   $dest"; continue; }
+    mkdir -p "$dir"
+    cp -R "$SRC/skills/$name" "$dest"
+    find "$dest" -name __pycache__ -type d -prune -exec rm -rf {} +
+    echo "installed $dest"
+  done
+done
+
+# cdpi looks citations up in pinned CDPI sources; fetch them once into the shared cache.
+if [ "$DRY" = 0 ] && [ "$UNINSTALL" = 0 ] && printf '%s\n' "${SKILLS[@]}" | grep -qx cdpi; then
+  "${TARGETS[0]}/cdpi/bin/cdpi" sync || echo "install: cdpi sync failed; cards still work, run 'cdpi sync' later" >&2
+fi
